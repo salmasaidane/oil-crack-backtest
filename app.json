@@ -1,0 +1,26 @@
+{
+  "name": "Oil Crack Backtest",
+  "description": "Quant oil trading backtester with 3-2-1 crack and US-Iran war overlay",
+  "repository": "https://github.com/salmasaidane/oil-crack-backtest",
+  "logo": "https://node-js-sample.herokuapp.com/node.png",
+  "keywords": ["oil", "quant", "backtest", "crack-spread", "eia"],
+  "website": "https://github.com/salmasaidane/oil-crack-backtest",
+  "success_url": "/",
+  "buildpacks": [{ "url": "heroku/nodejs" }],
+  "env": {
+    "EIA_API_KEY": {
+      "description": "Free EIA Open Data key (https://www.eia.gov/opendata/register.php) — WTI, Gulf Coast gasoline & heating oil spot",
+      "required": false
+    },
+    "NODE_ENV": {
+      "description": "Node environment",
+      "value": "production"
+    }
+  },
+  "formation": {
+    "web": {
+      "quantity": 1,
+      "size": "eco"
+    }
+  }
+}
