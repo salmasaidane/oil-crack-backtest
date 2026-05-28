@@ -115,7 +115,7 @@ app.get('/api/context', (req, res) => {
       disclaimer:
         'Educational backtest only. Uses EIA public spot series when EIA_API_KEY is set; otherwise Stooq WTI with model product legs. Not trading advice.',
       dataSources: [
-        'https://www.eia.gov/opendata/ — RWTC, RFGCUD, NUSHHO',
+        'https://www.eia.gov/opendata/ — PET.RWTC.D, PET.EER_EPMRU_PF4_RGC_DPG.D, PET.EER_EPD2D_PF4_RGC_DPG.D',
         'https://www.eia.gov/petroleum/gasdiesel/',
       ],
     });

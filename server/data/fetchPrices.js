@@ -49,16 +49,25 @@ function businessDays(endDate, count) {
 
 function generateSyntheticSeries(dates, baseWti, rng) {
   let wti = baseWti;
-  let rbob = baseWti * 1.12;
-  let ho = baseWti * 1.05;
   const rows = [];
-  for (const date of dates) {
+  for (let idx = 0; idx < dates.length; idx++) {
+    const date = dates[idx];
     const shock = (rng() - 0.5) * 2.8;
-    const trend = Math.sin(dates.indexOf(date) / 45) * 0.4;
+    const trend = Math.sin(idx / 45) * 0.4;
     wti = Math.max(35, wti + shock + trend);
-    rbob = Math.max(40, rbob + shock * 1.05 + (rng() - 0.5) * 1.2);
-    ho = Math.max(38, ho + shock * 0.9 + (rng() - 0.5) * 1.0);
-    rows.push({ date, wti, rbob, ho, source: 'synthetic' });
+    const impliedGal = wti / 42;
+    const season = Math.sin((idx / 252) * Math.PI * 2);
+    const rbob = impliedGal * (1.18 + season * 0.06) + (rng() - 0.5) * 0.08;
+    const ho =
+      impliedGal * (1.14 + season * 0.02 + (idx > dates.length * 0.6 ? 0.08 : 0)) +
+      (rng() - 0.5) * 0.07;
+    rows.push({
+      date,
+      wti,
+      rbob: Math.max(0.8, rbob),
+      ho: Math.max(0.8, ho),
+      source: 'synthetic',
+    });
   }
   return rows;
 }
@@ -83,13 +92,15 @@ function alignWtiWithProducts(wtiRows, productRows) {
 
 function deriveProductsFromWti(wtiRows, rng) {
   return wtiRows.map((w, i) => {
-    const season = Math.sin((i / 252) * Math.PI * 2) * 2.5;
-    const rbob = w.close * (1.08 + season * 0.01) + (rng() - 0.5) * 1.5;
-    const ho = w.close * (1.02 + season * 0.008) + (rng() - 0.5) * 1.2;
+    const impliedGal = w.close / 42;
+    const season = Math.sin((i / 252) * Math.PI * 2);
+    const rbob = impliedGal * (1.18 + season * 0.06) + (rng() - 0.5) * 0.08;
+    const ho =
+      impliedGal * (1.14 + season * 0.02) + (rng() - 0.5) * 0.07;
     return {
       date: w.date,
-      rbob: Math.max(30, rbob),
-      ho: Math.max(28, ho),
+      rbob: Math.max(0.8, rbob),
+      ho: Math.max(0.8, ho),
       source: 'derived',
     };
   });

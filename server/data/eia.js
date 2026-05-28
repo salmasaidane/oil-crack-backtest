@@ -1,27 +1,26 @@
 /**
- * EIA Open Data v2 — US Gulf Coast spot prices for 3-2-1 crack inputs.
- * Register free key: https://www.eia.gov/opendata/register.php
+ * EIA Open Data — Gulf Coast spot prices for crack / spread backtests.
+ * https://www.eia.gov/opendata/register.php
  *
- * Series (petroleum/pri/spt, daily $/unit as published):
- * - RWTC   WTI Cushing spot ($/bbl)
- * - RFGCUD Gulf Coast conventional gasoline regular ($/gal)
- * - NUSHHO Gulf Coast No. 2 heating oil ($/gal)
+ * Uses v2 /seriesid/ (legacy PET.* daily series) — reliable for spot prices.
  */
 
-const EIA_BASE = 'https://api.eia.gov/v2/petroleum/pri/spt/data/';
-
-const SERIES = {
-  wti: 'RWTC',
-  rbob: 'RFGCUD',
-  ho: 'NUSHHO',
+const SERIESID = {
+  wti: 'PET.RWTC.D',
+  /** Gulf Coast conventional gasoline regular spot ($/gal) */
+  rbob: 'PET.EER_EPMRU_PF4_RGC_DPG.D',
+  /** Gulf Coast No. 2 heating oil spot ($/gal) — distillate/ULSD proxy */
+  ho: 'PET.EER_EPD2D_PF4_RGC_DPG.D',
 };
 
-async function fetchEiaSeries(apiKey, seriesId, { start, length = 5000 } = {}) {
+const SERIESID_ALT = {
+  ho: 'PET.EMD_EPD2D_PTE_RGC_DPG.D',
+};
+
+async function fetchEiaSeriesId(apiKey, seriesId, { start, length = 5000 } = {}) {
   const params = new URLSearchParams({
     api_key: apiKey,
-    frequency: 'daily',
     'data[0]': 'value',
-    'facets[series][]': seriesId,
     'sort[0][column]': 'period',
     'sort[0][direction]': 'asc',
     length: String(length),
@@ -29,11 +28,11 @@ async function fetchEiaSeries(apiKey, seriesId, { start, length = 5000 } = {}) {
   });
   if (start) params.set('start', start);
 
-  const url = `${EIA_BASE}?${params}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
+  const url = `https://api.eia.gov/v2/seriesid/${encodeURIComponent(seriesId)}/data/?${params}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(25000) });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(`EIA ${seriesId} HTTP ${res.status}: ${body.slice(0, 120)}`);
+    throw new Error(`EIA ${seriesId} HTTP ${res.status}: ${body.slice(0, 150)}`);
   }
 
   const json = await res.json();
@@ -44,10 +43,21 @@ async function fetchEiaSeries(apiKey, seriesId, { start, length = 5000 } = {}) {
 
   return rows
     .map((r) => ({
-      date: r.period,
+      date: r.period?.slice(0, 10),
       value: parseFloat(r.value),
     }))
     .filter((r) => r.date && Number.isFinite(r.value) && r.value > 0);
+}
+
+async function fetchWithAlt(apiKey, primary, alt, opts) {
+  try {
+    return await fetchEiaSeriesId(apiKey, primary, opts);
+  } catch (e1) {
+    if (alt) {
+      return fetchEiaSeriesId(apiKey, alt, opts);
+    }
+    throw e1;
+  }
 }
 
 function mergeEiaSeries(wti, rbob, ho) {
@@ -70,19 +80,20 @@ function mergeEiaSeries(wti, rbob, ho) {
 }
 
 /**
- * @returns {Promise<{ rows: object[], seriesUsed: string[] } | null>}
+ * @returns {Promise<{ rows: object[], seriesUsed: string[], partial?: boolean } | null>}
  */
 async function loadEiaMarketData(apiKey, { days = 504 } = {}) {
   if (!apiKey) return null;
 
   const startDate = new Date();
-  startDate.setDate(startDate.getDate() - Math.ceil(days * 1.6));
+  startDate.setDate(startDate.getDate() - Math.ceil(days * 1.8));
   const start = startDate.toISOString().slice(0, 10);
+  const opts = { start };
 
   const [wti, rbob, ho] = await Promise.all([
-    fetchEiaSeries(apiKey, SERIES.wti, { start }),
-    fetchEiaSeries(apiKey, SERIES.rbob, { start }),
-    fetchEiaSeries(apiKey, SERIES.ho, { start }),
+    fetchEiaSeriesId(apiKey, SERIESID.wti, opts),
+    fetchEiaSeriesId(apiKey, SERIESID.rbob, opts),
+    fetchWithAlt(apiKey, SERIESID.ho, SERIESID_ALT.ho, opts),
   ]);
 
   let merged = mergeEiaSeries(wti, rbob, ho);
@@ -98,8 +109,22 @@ async function loadEiaMarketData(apiKey, { days = 504 } = {}) {
       volume: 0,
       source: 'eia',
     })),
-    seriesUsed: Object.values(SERIES),
+    seriesUsed: [SERIESID.wti, SERIESID.rbob, SERIESID.ho],
   };
 }
 
-module.exports = { loadEiaMarketData, SERIES };
+/**
+ * Load individual EIA legs (for hybrid with Stooq WTI).
+ */
+async function loadEiaLegs(apiKey, { days = 504 } = {}) {
+  const full = await loadEiaMarketData(apiKey, { days });
+  if (!full) return null;
+  return {
+    wti: full.rows.map((r) => ({ date: r.date, value: r.wti })),
+    rbob: full.rows.map((r) => ({ date: r.date, value: r.rbob })),
+    ho: full.rows.map((r) => ({ date: r.date, value: r.ho })),
+    seriesUsed: full.seriesUsed,
+  };
+}
+
+module.exports = { loadEiaMarketData, loadEiaLegs, SERIESID };
