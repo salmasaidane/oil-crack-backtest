@@ -6,19 +6,13 @@ import {
   ComposedChart,
   Legend,
   Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts';
 
-const DEFAULT_PARAMS = {
-  entryZ: 0.75,
-  exitZ: 0.15,
-  warMaxGpr: 0.85,
-  minConfidence: 0.35,
-};
+const DEFAULT_PARAMS = { fastPeriod: 20, slowPeriod: 50 };
 
 function formatPct(n) {
   const sign = n >= 0 ? '+' : '';
@@ -57,6 +51,7 @@ export default function App() {
 
   const runBacktest = useCallback(async () => {
     setRunning(true);
+    setResult(null);
     try {
       const res = await fetch('/api/backtest', {
         method: 'POST',
@@ -77,10 +72,10 @@ export default function App() {
   }, [loadData]);
 
   useEffect(() => {
-    if (signals.length > 0 && !result && !running) {
+    if (signals.length > 0 && !running) {
       runBacktest();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- initial backtest once data arrives
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signals.length]);
 
   const chartData = useMemo(
@@ -88,10 +83,9 @@ export default function App() {
       signals.map((s) => ({
         date: s.date.slice(5),
         wti: s.wti,
-        crack: s.crack321,
+        smaFast: s.smaFast,
+        smaSlow: s.smaSlow,
         signal: s.signal,
-        gpr: s.gpr * 100,
-        hormuz: s.hormuzRisk * 100,
       })),
     [signals]
   );
@@ -112,7 +106,11 @@ export default function App() {
       <div className="error">
         {error}
         <br />
-        <button className="primary" onClick={loadData} style={{ width: 'auto', marginTop: '1rem' }}>
+        <button
+          className="primary"
+          onClick={loadData}
+          style={{ width: 'auto', marginTop: '1rem' }}
+        >
           Retry
         </button>
       </div>
@@ -123,26 +121,17 @@ export default function App() {
   return (
     <div className="app">
       <header>
-        <h1>Oil Crack Quant Backtester</h1>
+        <h1>WTI Oil Trend Backtester</h1>
         <p>
-          3-2-1 refining crack signals augmented for US–Iran escalation (Hormuz risk, GPR overlay).
-          With EIA_API_KEY: EIA spot WTI, gasoline & heating oil; else Stooq WTI + model products.
+          Simple moving-average crossover on WTI: long when the fast average is above
+          the slow average, flat otherwise. One futures lot (1,000 bbl) per signal.
         </p>
         <div className="badge-row">
+          <span className="badge accent">
+            {meta?.strategy || 'SMA crossover'}
+          </span>
           <span className="badge accent">Source: {meta?.dataSource}</span>
-          {meta?.eiaConfigured && (
-            <span className="badge accent">
-              EIA {meta?.dataSource === 'eia' ? 'live' : 'key set'}
-            </span>
-          )}
-          {meta?.eiaError && (
-            <span className="badge warn" title={meta.eiaError}>
-              EIA fallback
-            </span>
-          )}
           <span className="badge">{meta?.from} → {meta?.to}</span>
-          <span className="badge warn">War window: Apr–May 2026</span>
-          <span className="badge">Brent prem: ${meta?.brentPremium}/bbl</span>
         </div>
       </header>
 
@@ -150,10 +139,8 @@ export default function App() {
         <aside className="panel">
           <h2>Strategy parameters</h2>
           {[
-            { key: 'entryZ', label: 'Long entry (signal Z)', min: 0.3, max: 1.5, step: 0.05 },
-            { key: 'exitZ', label: 'Exit (signal Z)', min: -0.5, max: 0.5, step: 0.05 },
-            { key: 'warMaxGpr', label: 'War de-risk GPR', min: 0.5, max: 1, step: 0.05 },
-            { key: 'minConfidence', label: 'Min confidence', min: 0.1, max: 0.9, step: 0.05 },
+            { key: 'fastPeriod', label: 'Fast SMA (days)', min: 5, max: 40, step: 1 },
+            { key: 'slowPeriod', label: 'Slow SMA (days)', min: 20, max: 120, step: 5 },
           ].map(({ key, label, min, max, step }) => (
             <div className="field" key={key}>
               <label>
@@ -167,7 +154,7 @@ export default function App() {
                 step={step}
                 value={params[key]}
                 onChange={(e) =>
-                  setParams((p) => ({ ...p, [key]: parseFloat(e.target.value) }))
+                  setParams((p) => ({ ...p, [key]: parseInt(e.target.value, 10) }))
                 }
               />
             </div>
@@ -178,13 +165,19 @@ export default function App() {
 
           {context && (
             <>
-              <h2 style={{ marginTop: '1.25rem' }}>War overlay logic</h2>
+              <h2 style={{ marginTop: '1.25rem' }}>How it works</h2>
               <ul className="context-list">
                 {context.narrative.map((line, i) => (
                   <li key={i}>{line}</li>
                 ))}
               </ul>
             </>
+          )}
+
+          {summary?.trades === 0 && (
+            <p className="context-list" style={{ color: 'var(--warn)', marginTop: '1rem' }}>
+              No trades yet — widen the SMA gap or refresh data.
+            </p>
           )}
         </aside>
 
@@ -205,7 +198,9 @@ export default function App() {
               </div>
               <div className="metric">
                 <div className="label">Max drawdown</div>
-                <div className="value negative">{formatPct(summary.maxDrawdownPct)}</div>
+                <div className="value negative">
+                  {formatPct(summary.maxDrawdownPct)}
+                </div>
               </div>
               <div className="metric">
                 <div className="label">Trades / win %</div>
@@ -223,54 +218,10 @@ export default function App() {
           )}
 
           <div className="panel">
-            <h2>WTI & 3-2-1 crack ($/bbl)</h2>
+            <h2>WTI price &amp; SMAs ($/bbl)</h2>
             <div className="chart-wrap">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={chartData}>
-                  <CartesianGrid stroke="#243038" strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fill: '#8a9aa8', fontSize: 10 }} />
-                  <YAxis yAxisId="left" tick={{ fill: '#8a9aa8', fontSize: 10 }} />
-                  <YAxis
-                    yAxisId="right"
-                    orientation="right"
-                    tick={{ fill: '#8a9aa8', fontSize: 10 }}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: '#141a20',
-                      border: '1px solid #243038',
-                      fontSize: 12,
-                    }}
-                  />
-                  <Legend />
-                  <Line
-                    yAxisId="left"
-                    type="monotone"
-                    dataKey="wti"
-                    name="WTI"
-                    stroke="#3d9a8b"
-                    dot={false}
-                    strokeWidth={1.5}
-                  />
-                  <Line
-                    yAxisId="right"
-                    type="monotone"
-                    dataKey="crack"
-                    name="Crack 3-2-1"
-                    stroke="#c9a227"
-                    dot={false}
-                    strokeWidth={1.5}
-                  />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className="panel">
-            <h2>Augmented signal & geopolitical risk (%)</h2>
-            <div className="chart-wrap">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData}>
                   <CartesianGrid stroke="#243038" strokeDasharray="3 3" />
                   <XAxis dataKey="date" tick={{ fill: '#8a9aa8', fontSize: 10 }} />
                   <YAxis tick={{ fill: '#8a9aa8', fontSize: 10 }} />
@@ -284,27 +235,29 @@ export default function App() {
                   <Legend />
                   <Line
                     type="monotone"
-                    dataKey="signal"
-                    name="Augmented Z"
+                    dataKey="wti"
+                    name="WTI"
+                    stroke="#3d9a8b"
+                    dot={false}
+                    strokeWidth={1.5}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="smaFast"
+                    name="Fast SMA"
                     stroke="#4caf82"
                     dot={false}
+                    strokeWidth={1.2}
                   />
                   <Line
                     type="monotone"
-                    dataKey="gpr"
-                    name="GPR index"
-                    stroke="#c45c4a"
+                    dataKey="smaSlow"
+                    name="Slow SMA"
+                    stroke="#c9a227"
                     dot={false}
+                    strokeWidth={1.2}
                   />
-                  <Line
-                    type="monotone"
-                    dataKey="hormuz"
-                    name="Hormuz risk"
-                    stroke="#8a9aa8"
-                    dot={false}
-                    strokeDasharray="4 4"
-                  />
-                </LineChart>
+                </ComposedChart>
               </ResponsiveContainer>
             </div>
           </div>
@@ -317,10 +270,7 @@ export default function App() {
                   <AreaChart data={equityData}>
                     <CartesianGrid stroke="#243038" strokeDasharray="3 3" />
                     <XAxis dataKey="date" tick={{ fill: '#8a9aa8', fontSize: 10 }} />
-                    <YAxis
-                      tick={{ fill: '#8a9aa8', fontSize: 10 }}
-                      domain={['auto', 'auto']}
-                    />
+                    <YAxis tick={{ fill: '#8a9aa8', fontSize: 10 }} domain={['auto', 'auto']} />
                     <Tooltip
                       contentStyle={{
                         background: '#141a20',
@@ -350,8 +300,6 @@ export default function App() {
                     <th>Date</th>
                     <th>Side</th>
                     <th>Price</th>
-                    <th>Signal</th>
-                    <th>Regime</th>
                     <th>PnL</th>
                     <th>Reason</th>
                   </tr>
@@ -362,8 +310,6 @@ export default function App() {
                       <td>{t.date}</td>
                       <td>{t.side}</td>
                       <td>${t.price?.toFixed(2)}</td>
-                      <td>{t.signal}</td>
-                      <td>{t.regime}</td>
                       <td>{t.pnl != null ? `$${t.pnl.toFixed(0)}` : '—'}</td>
                       <td>{t.reason}</td>
                     </tr>

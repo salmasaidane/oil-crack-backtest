@@ -1,17 +1,20 @@
 /**
- * Simple long/flat WTI futures-style backtest on augmented crack + war signals.
+ * Long/flat WTI backtest on SMA crossover (signal 1 = long, 0 = flat).
  */
 
 function runBacktest(signals, params = {}) {
   const {
-    entryZ = 0.75,
-    exitZ = 0.15,
-    warMaxGpr = 0.85,
-    minConfidence = 0.35,
+    slowPeriod = 50,
     initialCapital = 1_000_000,
     contractBbl = 1000,
     costBps = 2.5,
   } = params;
+
+  const fee = (price) => (costBps / 10000) * contractBbl * price;
+  const startIdx = signals.findIndex((s) => s.smaSlow != null);
+  if (startIdx < 0) {
+    return emptyResult(initialCapital, params);
+  }
 
   let cash = initialCapital;
   let position = 0;
@@ -19,69 +22,58 @@ function runBacktest(signals, params = {}) {
   const trades = [];
   const equity = [];
 
-  for (let i = 1; i < signals.length; i++) {
-    const prev = signals[i - 1];
+  for (let i = startIdx; i < signals.length; i++) {
     const cur = signals[i];
     const price = cur.wti;
-    const ret = (price - prev.wti) / prev.wti;
 
-    if (position !== 0) {
-      const pnl = position * contractBbl * (price - entryPrice);
-      cash += position * contractBbl * (price - prev.wti);
+    if (i > startIdx && position === 1) {
+      const prev = signals[i - 1];
+      cash += contractBbl * (price - prev.wti);
     }
 
-    const mark = cash + position * contractBbl * price;
     equity.push({
       date: cur.date,
-      equity: mark,
+      equity: cash,
       position,
       wti: price,
       signal: cur.signal,
-      gpr: cur.gpr,
+      smaFast: cur.smaFast,
+      smaSlow: cur.smaSlow,
     });
 
-    const warBlock = cur.gpr > warMaxGpr && cur.signal > 0;
-    const canTrade = cur.confidence >= minConfidence && !warBlock;
-
-    if (position === 0 && canTrade && cur.signal > entryZ) {
-      const cost = (costBps / 10000) * contractBbl * price;
+    if (position === 0 && cur.signal === 1) {
       position = 1;
       entryPrice = price;
-      cash -= cost;
+      cash -= fee(price);
       trades.push({
         date: cur.date,
         side: 'BUY',
         price,
-        signal: cur.signal,
-        regime: cur.regime,
-        reason: 'augmented crack long',
+        reason: `SMA ${params.fastPeriod ?? 20}/${slowPeriod} bullish`,
       });
-    } else if (position === 1 && (cur.signal < exitZ || warBlock)) {
-      const cost = (costBps / 10000) * contractBbl * price;
-      cash -= cost;
+    } else if (position === 1 && cur.signal === 0) {
       const tradePnl = contractBbl * (price - entryPrice);
+      cash -= fee(price);
       trades.push({
         date: cur.date,
         side: 'SELL',
         price,
-        signal: cur.signal,
-        regime: cur.regime,
         pnl: tradePnl,
-        reason: warBlock ? 'war risk de-risk' : 'signal mean reversion',
+        reason: `SMA ${params.fastPeriod ?? 20}/${slowPeriod} bearish`,
       });
       position = 0;
       entryPrice = 0;
     }
-
-    void ret;
   }
 
   const finalEq = equity[equity.length - 1]?.equity ?? initialCapital;
   const totalReturn = (finalEq - initialCapital) / initialCapital;
+
   const dailyReturns = [];
   for (let i = 1; i < equity.length; i++) {
-    const r = (equity[i].equity - equity[i - 1].equity) / equity[i - 1].equity;
-    dailyReturns.push(r);
+    dailyReturns.push(
+      (equity[i].equity - equity[i - 1].equity) / equity[i - 1].equity
+    );
   }
   const meanR =
     dailyReturns.reduce((a, b) => a + b, 0) / (dailyReturns.length || 1);
@@ -91,6 +83,7 @@ function runBacktest(signals, params = {}) {
         (dailyReturns.length || 1)
     ) || 1e-9;
   const sharpe = (meanR / stdR) * Math.sqrt(252);
+
   let peak = initialCapital;
   let maxDd = 0;
   for (const e of equity) {
@@ -98,21 +91,42 @@ function runBacktest(signals, params = {}) {
     maxDd = Math.min(maxDd, (e.equity - peak) / peak);
   }
 
-  const wins = trades.filter((t) => t.pnl > 0).length;
-  const closed = trades.filter((t) => t.side === 'SELL').length;
+  const closed = trades.filter((t) => t.side === 'SELL');
+  const wins = closed.filter((t) => t.pnl > 0).length;
 
   return {
     summary: {
+      strategy: 'WTI SMA crossover (long/flat)',
       initialCapital,
       finalEquity: Number(finalEq.toFixed(2)),
       totalReturnPct: Number((totalReturn * 100).toFixed(2)),
       sharpe: Number(sharpe.toFixed(2)),
       maxDrawdownPct: Number((maxDd * 100).toFixed(2)),
-      trades: closed,
-      winRatePct: closed ? Number(((wins / closed) * 100).toFixed(1)) : 0,
+      trades: closed.length,
+      winRatePct: closed.length
+        ? Number(((wins / closed.length) * 100).toFixed(1))
+        : 0,
     },
     equity,
     trades,
+    params,
+  };
+}
+
+function emptyResult(initialCapital, params) {
+  return {
+    summary: {
+      strategy: 'WTI SMA crossover',
+      initialCapital,
+      finalEquity: initialCapital,
+      totalReturnPct: 0,
+      sharpe: 0,
+      maxDrawdownPct: 0,
+      trades: 0,
+      winRatePct: 0,
+    },
+    equity: [],
+    trades: [],
     params,
   };
 }
