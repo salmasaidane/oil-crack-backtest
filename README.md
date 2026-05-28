@@ -44,9 +44,18 @@ npm start
 
 Open http://localhost:3000
 
-## Deploy to Heroku
+## Deploy
 
-**Repo missing?** See **[REPO_SETUP.md](REPO_SETUP.md)** for create → push → deploy steps.
+| Platform | Cost | Guide |
+|----------|------|--------|
+| **Render** (recommended, no card for free tier) | Free tier | **[DEPLOY_RENDER.md](DEPLOY_RENDER.md)** |
+| **Heroku** | ~$5/mo Eco subscription required | Below + [Eco signup](https://dashboard.heroku.com/eco) |
+
+**Repo missing?** See **[REPO_SETUP.md](REPO_SETUP.md)**.
+
+## Deploy to Heroku (paid Eco plan)
+
+Heroku no longer has a free tier. You must **subscribe to Eco** (~$5/month) before deploy works: https://dashboard.heroku.com/eco → **Subscribe to Eco**, then redeploy.
 
 ### Option A — One-click (after GitHub push)
 
