@@ -14,7 +14,7 @@ app.use(cors());
 app.use(express.json());
 
 let cache = null;
-const CACHE_MS = 15 * 60 * 1000;
+const CACHE_MS = 5 * 60 * 1000;
 
 async function getMarket() {
   if (cache && Date.now() - cache.time < CACHE_MS) return cache;
