@@ -1,5 +1,5 @@
 const seedrandom = require('seedrandom');
-const { loadEiaMarketData } = require('./eia');
+const { loadEiaMarketData, loadEiaProducts } = require('./eia');
 
 const STOOQ_WTI = 'https://stooq.com/q/d/l/?s=cl.f&i=d';
 const STOOQ_BRENT = 'https://stooq.com/q/d/l/?s=cb.f&i=d';
@@ -154,8 +154,52 @@ async function loadMarketData({ days = 504 } = {}) {
         };
       }
     } catch (err) {
-      console.warn('EIA fetch failed, falling back:', err.message);
+      console.warn('EIA full load failed:', err.message);
       eiaSeries = err.message;
+
+      // Hybrid: Stooq WTI + EIA gasoline/distillate only
+      try {
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - Math.ceil(days * 1.8));
+        const opts = { start: startDate.toISOString().slice(0, 10) };
+        const products = await loadEiaProducts(eiaKey, opts);
+        let wtiRows = [];
+        try {
+          wtiRows = await fetchStooq(STOOQ_WTI);
+          wtiRows = wtiRows.slice(-days).map((r) => ({ ...r, source: 'stooq' }));
+        } catch {
+          throw new Error('Stooq WTI unavailable for hybrid');
+        }
+        const productRows = wtiRows.map((w) => {
+          const rb = products.rbob.rows.find((p) => p.date === w.date);
+          const ho = products.ho.rows.find((p) => p.date === w.date);
+          if (!rb || !ho) return null;
+          return {
+            date: w.date,
+            rbob: rb.value,
+            ho: ho.value,
+            source: 'eia',
+          };
+        }).filter(Boolean);
+        const series = alignWtiWithProducts(wtiRows, productRows);
+        if (series.length >= 30) {
+          return {
+            series,
+            meta: {
+              dataSource: 'stooq-wti+eia-products',
+              eiaConfigured: true,
+              eiaSeries: [products.rbob.source, products.ho.source],
+              brentPremium: Number(brentPremium.toFixed(2)),
+              rows: series.length,
+              from: series[0]?.date,
+              to: series[series.length - 1]?.date,
+            },
+          };
+        }
+      } catch (hybridErr) {
+        console.warn('EIA hybrid failed:', hybridErr.message);
+        eiaSeries = hybridErr.message;
+      }
     }
   }
 

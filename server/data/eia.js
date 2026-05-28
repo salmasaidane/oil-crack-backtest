@@ -1,82 +1,156 @@
 /**
- * EIA Open Data v2 — Gulf Coast spot prices (petroleum/pri/spt).
- * https://www.eia.gov/opendata/register.php
- *
- * Use facets[series][] on pri/spt (not /seriesid/ — petroleum IDs 404 there).
+ * EIA Open Data — Gulf Coast spot (WTI, gasoline, distillate).
+ * Tries v2 pri/spt (series + product/duoarea facets) and v1 series API.
  */
 
 const SPT_DATA = 'https://api.eia.gov/v2/petroleum/pri/spt/data/';
+const V1_SERIES = 'https://api.eia.gov/v1/series/';
 
-/** Daily spot series (v1-style IDs work as series facet on pri/spt) */
-const SERIES = {
-  wti: ['PET.RWTC.D'],
-  rbob: [
-    'PET.EER_EPMRU_PF4_RGC_DPG.D',
-    'PET.EMD_EPMRU_PF4_RGC_DPG.D',
-  ],
-  ho: [
-    'PET.EER_EPD2D_PF4_RGC_DPG.D',
-    'PET.EMD_EPD2D_PTE_RGC_DPG.D',
-    'PET.EER_EPD2DXL0_PF4_RGC_DPG.D',
-  ],
+const LEG_CONFIG = {
+  wti: {
+    v2Series: ['RWTC', 'PET.RWTC.D'],
+    v1Series: ['PET.RWTC.D'],
+    facets: [],
+    unit: 'bbl',
+  },
+  rbob: {
+    v2Series: [
+      'GASUSGCD',
+      'EER_EPMRU_PF4_RGC_DPG',
+      'PET.EER_EPMRU_PF4_RGC_DPG.D',
+      'RFGCUD',
+    ],
+    v1Series: ['PET.EER_EPMRU_PF4_RGC_DPG.D'],
+    facets: [
+      { duoarea: 'RGC', product: 'EPMRU' },
+      { duoarea: 'RGC', product: 'EPMRR' },
+    ],
+    unit: 'gal',
+  },
+  ho: {
+    v2Series: [
+      'DIUSGCD',
+      'EER_EPD2DXL0_PF4_RGC_DPG',
+      'EER_EPD2D_PF4_RGC_DPG',
+      'NUSHHO',
+      'PET.EER_EPD2D_PF4_RGC_DPG.D',
+      'PET.EMD_EPD2D_PTE_RGC_DPG.D',
+    ],
+    v1Series: [
+      'PET.EER_EPD2DXL0_PF4_RGC_DPG.D',
+      'PET.EER_EPD2D_PF4_RGC_DPG.D',
+      'PET.EMD_EPD2D_PTE_RGC_DPG.D',
+    ],
+    facets: [
+      { duoarea: 'RGC', product: 'EPD2DXL0' },
+      { duoarea: 'RGC', product: 'EPD2D' },
+    ],
+    unit: 'gal',
+  },
 };
 
-async function fetchSptSeries(apiKey, seriesId, { start, length = 5000 } = {}) {
-  const params = new URLSearchParams({
-    api_key: apiKey,
-    frequency: 'daily',
-    'data[0]': 'value',
-    'facets[series][]': seriesId,
-    'sort[0][column]': 'period',
-    'sort[0][direction]': 'asc',
-    length: String(length),
-    offset: '0',
-  });
-  if (start) params.set('start', start);
-
-  const url = `${SPT_DATA}?${params}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(25000) });
-  const bodyText = await res.text();
-
-  if (!res.ok) {
-    throw new Error(`EIA ${seriesId} HTTP ${res.status}: ${bodyText.slice(0, 150)}`);
-  }
-
-  let json;
-  try {
-    json = JSON.parse(bodyText);
-  } catch {
-    throw new Error(`EIA ${seriesId}: invalid JSON`);
-  }
-
-  const rows = json?.response?.data;
-  if (!Array.isArray(rows) || rows.length === 0) {
-    throw new Error(`EIA ${seriesId}: empty response`);
-  }
-
+function parseRows(rows) {
   return rows
     .map((r) => ({
-      date: String(r.period).slice(0, 10),
-      value: parseFloat(r.value),
+      date: String(r.period ?? r.date ?? r[0]).slice(0, 10),
+      value: parseFloat(r.value ?? r[1]),
     }))
     .filter((r) => r.date && Number.isFinite(r.value) && r.value > 0);
 }
 
-async function fetchFirstWorking(apiKey, seriesIds, opts) {
-  let lastErr;
-  for (const id of seriesIds) {
-    try {
-      const rows = await fetchSptSeries(apiKey, id, opts);
-      return { rows, seriesId: id };
-    } catch (e) {
-      lastErr = e;
-      console.warn(`EIA try ${id}:`, e.message);
-    }
+async function fetchV2Spt(apiKey, { seriesId, facets = {} }, opts) {
+  const params = new URLSearchParams({
+    api_key: apiKey,
+    frequency: 'daily',
+    'data[0]': 'value',
+    'sort[0][column]': 'period',
+    'sort[0][direction]': 'asc',
+    length: String(opts.length ?? 5000),
+    offset: '0',
+  });
+  if (opts.start) params.set('start', opts.start);
+  if (seriesId) params.append('facets[series][]', seriesId);
+  for (const [k, v] of Object.entries(facets)) {
+    params.append(`facets[${k}][]`, v);
   }
-  throw lastErr || new Error('EIA: no series matched');
+
+  const url = `${SPT_DATA}?${params}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(25000) });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`v2 ${seriesId || JSON.stringify(facets)} HTTP ${res.status}: ${text.slice(0, 120)}`);
+  }
+  const json = JSON.parse(text);
+  const rows = parseRows(json?.response?.data ?? []);
+  if (!rows.length) throw new Error(`v2 ${seriesId || 'facets'}: empty`);
+  return rows;
 }
 
-function mergeEiaSeries(wti, rbob, ho) {
+async function fetchV1Series(apiKey, seriesId, opts) {
+  const params = new URLSearchParams({
+    api_key: apiKey,
+    series_id: seriesId,
+  });
+  const url = `${V1_SERIES}?${params}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(25000) });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`v1 ${seriesId} HTTP ${res.status}: ${text.slice(0, 120)}`);
+  }
+  const json = JSON.parse(text);
+  const raw = json?.series?.[0]?.data ?? json?.response?.data ?? [];
+  const rows = raw
+    .map((pair) => {
+      const d = String(pair[0]);
+      const date =
+        d.length === 8
+          ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`
+          : d.slice(0, 10);
+      return { date, value: parseFloat(pair[1]) };
+    })
+    .filter((r) => r.date && Number.isFinite(r.value) && r.value > 0);
+  if (!rows.length) throw new Error(`v1 ${seriesId}: empty`);
+  if (opts.start) {
+    return rows.filter((r) => r.date >= opts.start);
+  }
+  return rows;
+}
+
+async function fetchLeg(apiKey, legKey, opts) {
+  const cfg = LEG_CONFIG[legKey];
+  let lastErr;
+
+  for (const id of cfg.v2Series) {
+    try {
+      const rows = await fetchV2Spt(apiKey, { seriesId: id }, opts);
+      return { rows, source: `v2:${id}` };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  for (const facets of cfg.facets) {
+    try {
+      const rows = await fetchV2Spt(apiKey, { facets }, opts);
+      return { rows, source: `v2:${facets.duoarea}+${facets.product}` };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  for (const id of cfg.v1Series) {
+    try {
+      const rows = await fetchV1Series(apiKey, id, opts);
+      return { rows, source: `v1:${id}` };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  throw lastErr || new Error(`EIA ${legKey}: all methods failed`);
+}
+
+function mergeLegs(wti, rbob, ho) {
   const maps = {
     wti: new Map(wti.map((r) => [r.date, r.value])),
     rbob: new Map(rbob.map((r) => [r.date, r.value])),
@@ -100,19 +174,16 @@ async function loadEiaMarketData(apiKey, { days = 504 } = {}) {
 
   const startDate = new Date();
   startDate.setDate(startDate.getDate() - Math.ceil(days * 1.8));
-  const start = startDate.toISOString().slice(0, 10);
-  const opts = { start };
+  const opts = { start: startDate.toISOString().slice(0, 10) };
 
-  const wtiR = await fetchFirstWorking(apiKey, SERIES.wti, opts);
-  const rbobR = await fetchFirstWorking(apiKey, SERIES.rbob, opts);
-  const hoR = await fetchFirstWorking(apiKey, SERIES.ho, opts);
+  const wtiR = await fetchLeg(apiKey, 'wti', opts);
+  const rbobR = await fetchLeg(apiKey, 'rbob', opts);
+  const hoR = await fetchLeg(apiKey, 'ho', opts);
 
-  let merged = mergeEiaSeries(wtiR.rows, rbobR.rows, hoR.rows);
+  let merged = mergeLegs(wtiR.rows, rbobR.rows, hoR.rows);
   if (merged.length < 30) return null;
 
   merged = merged.slice(-days);
-  const seriesUsed = [wtiR.seriesId, rbobR.seriesId, hoR.seriesId];
-
   return {
     rows: merged.map((r) => ({
       date: r.date,
@@ -122,8 +193,15 @@ async function loadEiaMarketData(apiKey, { days = 504 } = {}) {
       volume: 0,
       source: 'eia',
     })),
-    seriesUsed,
+    seriesUsed: [wtiR.source, rbobR.source, hoR.source],
   };
 }
 
-module.exports = { loadEiaMarketData, SERIES };
+/** Fetch product legs only (for Stooq WTI hybrid). */
+async function loadEiaProducts(apiKey, opts) {
+  const rbobR = await fetchLeg(apiKey, 'rbob', opts);
+  const hoR = await fetchLeg(apiKey, 'ho', opts);
+  return { rbob: rbobR, ho: hoR };
+}
+
+module.exports = { loadEiaMarketData, loadEiaProducts, fetchLeg, LEG_CONFIG };
