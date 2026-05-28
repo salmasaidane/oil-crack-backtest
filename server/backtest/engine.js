@@ -41,6 +41,11 @@ function runBacktest(signals, params = {}) {
       smaSlow: cur.smaSlow,
     });
 
+    const tag =
+      params.strategy === 'crack'
+        ? `Crack SMA ${params.fastPeriod}/${slowPeriod}`
+        : `WTI SMA ${params.fastPeriod ?? 20}/${slowPeriod}`;
+
     if (position === 0 && cur.signal === 1) {
       position = 1;
       entryPrice = price;
@@ -49,7 +54,7 @@ function runBacktest(signals, params = {}) {
         date: cur.date,
         side: 'BUY',
         price,
-        reason: `SMA ${params.fastPeriod ?? 20}/${slowPeriod} bullish`,
+        reason: `${tag} bullish`,
       });
     } else if (position === 1 && cur.signal === 0) {
       const tradePnl = contractBbl * (price - entryPrice);
@@ -59,7 +64,7 @@ function runBacktest(signals, params = {}) {
         side: 'SELL',
         price,
         pnl: tradePnl,
-        reason: `SMA ${params.fastPeriod ?? 20}/${slowPeriod} bearish`,
+        reason: `${tag} bearish`,
       });
       position = 0;
       entryPrice = 0;
@@ -96,7 +101,7 @@ function runBacktest(signals, params = {}) {
 
   return {
     summary: {
-      strategy: 'WTI SMA crossover (long/flat)',
+      strategy: params.strategyLabel || 'SMA crossover (long/flat)',
       initialCapital,
       finalEquity: Number(finalEq.toFixed(2)),
       totalReturnPct: Number((totalReturn * 100).toFixed(2)),

@@ -3,7 +3,7 @@ const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const { loadMarketData } = require('./data/fetchPrices');
-const { buildSignals } = require('./signals/wtiSmaSignals');
+const { getStrategy, STRATEGIES } = require('./signals');
 const { runBacktest } = require('./backtest/engine');
 
 const app = express();
@@ -15,8 +15,6 @@ app.use(express.json());
 let cache = null;
 const CACHE_MS = 15 * 60 * 1000;
 
-const DEFAULT_PARAMS = { fastPeriod: 20, slowPeriod: 50 };
-
 async function getMarket() {
   if (cache && Date.now() - cache.time < CACHE_MS) return cache;
   const { series, meta } = await loadMarketData({ days: 504 });
@@ -24,23 +22,35 @@ async function getMarket() {
   return cache;
 }
 
+function resolveParams(queryOrBody) {
+  const strategyKey = queryOrBody.strategy === 'wti' ? 'wti' : 'crack';
+  const strat = getStrategy(strategyKey);
+  return {
+    strategy: strategyKey,
+    ...strat.defaults,
+    ...queryOrBody,
+  };
+}
+
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
     service: 'oil-crack-backtest',
-    strategy: 'wti-sma-crossover',
+    strategies: Object.keys(STRATEGIES),
     eiaConfigured: Boolean(process.env.EIA_API_KEY?.trim()),
   });
 });
 
-app.get('/api/data', async (_req, res) => {
+app.get('/api/data', async (req, res) => {
   try {
+    const params = resolveParams(req.query);
+    const strat = getStrategy(params.strategy);
     const { series, meta } = await getMarket();
-    const signals = buildSignals(series, DEFAULT_PARAMS);
+    const signals = strat.buildSignals(series, params);
     res.json({
-      meta: { ...meta, strategy: 'WTI SMA crossover' },
+      meta: { ...meta, strategy: strat.label, strategyId: params.strategy },
       signals,
-      params: DEFAULT_PARAMS,
+      params,
     });
   } catch (err) {
     console.error(err);
@@ -50,10 +60,14 @@ app.get('/api/data', async (_req, res) => {
 
 app.post('/api/backtest', async (req, res) => {
   try {
-    const params = { ...DEFAULT_PARAMS, ...(req.body || {}) };
+    const params = resolveParams(req.body || {});
+    const strat = getStrategy(params.strategy);
     const { series } = await getMarket();
-    const signals = buildSignals(series, params);
-    const result = runBacktest(signals, params);
+    const signals = strat.buildSignals(series, params);
+    const result = runBacktest(signals, {
+      ...params,
+      strategyLabel: strat.summary,
+    });
     res.json(result);
   } catch (err) {
     console.error(err);
@@ -61,16 +75,29 @@ app.post('/api/backtest', async (req, res) => {
   }
 });
 
-app.get('/api/context', (_req, res) => {
+app.get('/api/context', (req, res) => {
+  const key = req.query.strategy === 'wti' ? 'wti' : 'crack';
+  if (key === 'wti') {
+    return res.json({
+      title: 'WTI SMA crossover',
+      narrative: [
+        'Long 1×1,000 bbl WTI when the fast SMA of WTI is above the slow SMA.',
+        'Go flat when fast drops below slow.',
+        'Classic crude trend-following.',
+      ],
+      disclaimer:
+        'Educational demo only. Not investment advice.',
+    });
+  }
   res.json({
-    title: 'WTI SMA crossover',
+    title: '3-2-1 crack SMA crossover',
     narrative: [
-      'Long 1×1000 bbl WTI when the fast SMA is above the slow SMA.',
-      'Go flat when the fast SMA drops below the slow SMA.',
-      'Defaults: 20-day fast, 50-day slow — classic trend-following on crude.',
+      'Crack = refining margin proxy: (2×gasoline + 1×heating oil)×42 − 3×WTI, per bbl.',
+      'Long WTI when the fast SMA of the crack is above the slow SMA (widening margins).',
+      'Go flat when the crack trend turns down.',
     ],
     disclaimer:
-      'Educational demo only. Not investment advice. Past backtests do not guarantee future results.',
+      'Educational demo only. Not investment advice. Products from EIA or model-derived from WTI.',
   });
 });
 

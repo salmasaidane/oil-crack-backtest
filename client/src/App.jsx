@@ -12,7 +12,10 @@ import {
   YAxis,
 } from 'recharts';
 
-const DEFAULT_PARAMS = { fastPeriod: 20, slowPeriod: 50 };
+const STRATEGY_DEFAULTS = {
+  crack: { strategy: 'crack', fastPeriod: 15, slowPeriod: 40 },
+  wti: { strategy: 'wti', fastPeriod: 20, slowPeriod: 50 },
+};
 
 function formatPct(n) {
   const sign = n >= 0 ? '+' : '';
@@ -20,10 +23,11 @@ function formatPct(n) {
 }
 
 export default function App() {
+  const [strategy, setStrategy] = useState('crack');
+  const [params, setParams] = useState(STRATEGY_DEFAULTS.crack);
   const [meta, setMeta] = useState(null);
   const [signals, setSignals] = useState([]);
   const [context, setContext] = useState(null);
-  const [params, setParams] = useState(DEFAULT_PARAMS);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
@@ -34,20 +38,21 @@ export default function App() {
     setError(null);
     try {
       const [dataRes, ctxRes] = await Promise.all([
-        fetch('/api/data'),
-        fetch('/api/context'),
+        fetch(`/api/data?strategy=${strategy}`),
+        fetch(`/api/context?strategy=${strategy}`),
       ]);
       if (!dataRes.ok) throw new Error('Data API failed');
       const data = await dataRes.json();
       setMeta(data.meta);
       setSignals(data.signals || []);
+      if (data.params) setParams((p) => ({ ...p, ...data.params }));
       if (ctxRes.ok) setContext(await ctxRes.json());
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [strategy]);
 
   const runBacktest = useCallback(async () => {
     setRunning(true);
@@ -56,7 +61,7 @@ export default function App() {
       const res = await fetch('/api/backtest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
+        body: JSON.stringify({ ...params, strategy }),
       });
       if (!res.ok) throw new Error('Backtest failed');
       setResult(await res.json());
@@ -65,7 +70,7 @@ export default function App() {
     } finally {
       setRunning(false);
     }
-  }, [params]);
+  }, [params, strategy]);
 
   useEffect(() => {
     loadData();
@@ -76,13 +81,24 @@ export default function App() {
       runBacktest();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signals.length]);
+  }, [signals.length, strategy]);
+
+  const switchStrategy = (next) => {
+    if (next === strategy) return;
+    setStrategy(next);
+    setParams(STRATEGY_DEFAULTS[next]);
+    setSignals([]);
+    setResult(null);
+  };
+
+  const isCrack = strategy === 'crack';
 
   const chartData = useMemo(
     () =>
       signals.map((s) => ({
         date: s.date.slice(5),
         wti: s.wti,
+        crack321: s.crack321,
         smaFast: s.smaFast,
         smaSlow: s.smaSlow,
         signal: s.signal,
@@ -121,15 +137,31 @@ export default function App() {
   return (
     <div className="app">
       <header>
-        <h1>WTI Oil Trend Backtester</h1>
+        <h1>Oil Backtester</h1>
         <p>
-          Simple moving-average crossover on WTI: long when the fast average is above
-          the slow average, flat otherwise. One futures lot (1,000 bbl) per signal.
+          {isCrack
+            ? '3-2-1 crack spread trend: long WTI when fast crack SMA is above slow. Flat when margins trend down.'
+            : 'WTI price trend: long when fast WTI SMA is above slow. Flat otherwise.'}{' '}
+          One lot = 1,000 bbl.
         </p>
+        <div className="strategy-toggle">
+          <button
+            type="button"
+            className={isCrack ? 'active' : ''}
+            onClick={() => switchStrategy('crack')}
+          >
+            Crack spread
+          </button>
+          <button
+            type="button"
+            className={!isCrack ? 'active' : ''}
+            onClick={() => switchStrategy('wti')}
+          >
+            WTI trend
+          </button>
+        </div>
         <div className="badge-row">
-          <span className="badge accent">
-            {meta?.strategy || 'SMA crossover'}
-          </span>
+          <span className="badge accent">{meta?.strategy}</span>
           <span className="badge accent">Source: {meta?.dataSource}</span>
           <span className="badge">{meta?.from} → {meta?.to}</span>
         </div>
@@ -173,12 +205,6 @@ export default function App() {
               </ul>
             </>
           )}
-
-          {summary?.trades === 0 && (
-            <p className="context-list" style={{ color: 'var(--warn)', marginTop: '1rem' }}>
-              No trades yet — widen the SMA gap or refresh data.
-            </p>
-          )}
         </aside>
 
         <main>
@@ -210,21 +236,33 @@ export default function App() {
               </div>
               <div className="metric">
                 <div className="label">Final equity</div>
-                <div className="value">
-                  ${summary.finalEquity.toLocaleString()}
-                </div>
+                <div className="value">${summary.finalEquity.toLocaleString()}</div>
               </div>
             </div>
           )}
 
           <div className="panel">
-            <h2>WTI price &amp; SMAs ($/bbl)</h2>
+            <h2>
+              {isCrack
+                ? '3-2-1 crack & SMAs ($/bbl)'
+                : 'WTI price & SMAs ($/bbl)'}
+            </h2>
             <div className="chart-wrap">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={chartData}>
                   <CartesianGrid stroke="#243038" strokeDasharray="3 3" />
                   <XAxis dataKey="date" tick={{ fill: '#8a9aa8', fontSize: 10 }} />
-                  <YAxis tick={{ fill: '#8a9aa8', fontSize: 10 }} />
+                  <YAxis
+                    yAxisId="main"
+                    tick={{ fill: '#8a9aa8', fontSize: 10 }}
+                  />
+                  {isCrack && (
+                    <YAxis
+                      yAxisId="wti"
+                      orientation="right"
+                      tick={{ fill: '#5a6a78', fontSize: 10 }}
+                    />
+                  )}
                   <Tooltip
                     contentStyle={{
                       background: '#141a20',
@@ -233,15 +271,41 @@ export default function App() {
                     }}
                   />
                   <Legend />
+                  {isCrack ? (
+                    <>
+                      <Line
+                        yAxisId="main"
+                        type="monotone"
+                        dataKey="crack321"
+                        name="Crack 3-2-1"
+                        stroke="#c9a227"
+                        dot={false}
+                        strokeWidth={1.5}
+                      />
+                      <Line
+                        yAxisId="wti"
+                        type="monotone"
+                        dataKey="wti"
+                        name="WTI"
+                        stroke="#3d9a8b55"
+                        dot={false}
+                        strokeWidth={1}
+                        strokeDasharray="4 4"
+                      />
+                    </>
+                  ) : (
+                    <Line
+                      yAxisId="main"
+                      type="monotone"
+                      dataKey="wti"
+                      name="WTI"
+                      stroke="#3d9a8b"
+                      dot={false}
+                      strokeWidth={1.5}
+                    />
+                  )}
                   <Line
-                    type="monotone"
-                    dataKey="wti"
-                    name="WTI"
-                    stroke="#3d9a8b"
-                    dot={false}
-                    strokeWidth={1.5}
-                  />
-                  <Line
+                    yAxisId="main"
                     type="monotone"
                     dataKey="smaFast"
                     name="Fast SMA"
@@ -250,10 +314,11 @@ export default function App() {
                     strokeWidth={1.2}
                   />
                   <Line
+                    yAxisId="main"
                     type="monotone"
                     dataKey="smaSlow"
                     name="Slow SMA"
-                    stroke="#c9a227"
+                    stroke="#8a9aa8"
                     dot={false}
                     strokeWidth={1.2}
                   />
@@ -322,8 +387,7 @@ export default function App() {
       </div>
 
       <p className="disclaimer">
-        {context?.disclaimer ||
-          'Educational demo only. Not investment advice.'}
+        {context?.disclaimer || 'Educational demo only. Not investment advice.'}
       </p>
     </div>
   );
