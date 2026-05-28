@@ -5,6 +5,7 @@ const cors = require('cors');
 const { loadMarketData } = require('./data/fetchPrices');
 const { getStrategy, STRATEGIES } = require('./signals');
 const { runBacktest } = require('./backtest/engine');
+const { runSpreadBacktest } = require('./backtest/spreadEngine');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -23,13 +24,29 @@ async function getMarket() {
 }
 
 function resolveParams(queryOrBody) {
-  const strategyKey = queryOrBody.strategy === 'wti' ? 'wti' : 'crack';
+  const strategyKey =
+    queryOrBody.strategy && STRATEGIES[queryOrBody.strategy]
+      ? queryOrBody.strategy
+      : 'spread';
   const strat = getStrategy(strategyKey);
   return {
     strategy: strategyKey,
     ...strat.defaults,
     ...queryOrBody,
   };
+}
+
+function runForStrategy(signals, params, strat) {
+  if (strat.engine === 'spread') {
+    return runSpreadBacktest(signals, {
+      ...params,
+      strategyLabel: strat.summary,
+    });
+  }
+  return runBacktest(signals, {
+    ...params,
+    strategyLabel: strat.summary,
+  });
 }
 
 app.get('/api/health', (_req, res) => {
@@ -48,7 +65,15 @@ app.get('/api/data', async (req, res) => {
     const { series, meta } = await getMarket();
     const signals = strat.buildSignals(series, params);
     res.json({
-      meta: { ...meta, strategy: strat.label, strategyId: params.strategy },
+      meta: {
+        ...meta,
+        strategy: strat.label,
+        strategyId: params.strategy,
+        productsNote:
+          meta.dataSource === 'eia'
+            ? 'EIA Gulf Coast spot: RFGCUD gasoline, NUSHHO distillate (No.2 heating oil proxy)'
+            : 'Stooq WTI + model gasoline/distillate from crude',
+      },
       signals,
       params,
     });
@@ -64,10 +89,7 @@ app.post('/api/backtest', async (req, res) => {
     const strat = getStrategy(params.strategy);
     const { series } = await getMarket();
     const signals = strat.buildSignals(series, params);
-    const result = runBacktest(signals, {
-      ...params,
-      strategyLabel: strat.summary,
-    });
+    const result = runForStrategy(signals, params, strat);
     res.json(result);
   } catch (err) {
     console.error(err);
@@ -76,28 +98,47 @@ app.post('/api/backtest', async (req, res) => {
 });
 
 app.get('/api/context', (req, res) => {
-  const key = req.query.strategy === 'wti' ? 'wti' : 'crack';
+  const key = req.query.strategy && STRATEGIES[req.query.strategy]
+    ? req.query.strategy
+    : 'spread';
+
+  if (key === 'spread') {
+    return res.json({
+      title: 'Distillate vs gasoline crack (US–Iran / Hormuz context)',
+      narrative: [
+        'Gasoline crack (RBOB proxy): Gulf Coast regular gasoline × 42 − WTI.',
+        'Distillate crack: Gulf Coast No.2 heating oil × 42 − WTI (EIA distillate proxy; tracks ULSD direction).',
+        'Spread = distillate crack − gasoline crack. When it widens, middle distillates are outperforming light ends.',
+        'Strategy: long the spread when fast SMA > slow SMA (ride distillate strength); flat when trend reverses.',
+        'Motivation: summer gasoline demand vs diesel/ULSD tightness from disrupted routes and elevated military/logistics demand in the US–Iran conflict.',
+      ],
+      disclaimer:
+        'Educational backtest only. Uses EIA public spot series when EIA_API_KEY is set; otherwise Stooq WTI with model product legs. Not trading advice.',
+      dataSources: [
+        'https://www.eia.gov/opendata/ — RWTC, RFGCUD, NUSHHO',
+        'https://www.eia.gov/petroleum/gasdiesel/',
+      ],
+    });
+  }
+
   if (key === 'wti') {
     return res.json({
       title: 'WTI SMA crossover',
       narrative: [
-        'Long 1×1,000 bbl WTI when the fast SMA of WTI is above the slow SMA.',
-        'Go flat when fast drops below slow.',
-        'Classic crude trend-following.',
+        'Long 1×1,000 bbl WTI when fast SMA > slow SMA on WTI spot.',
+        'Flat when fast < slow.',
       ],
-      disclaimer:
-        'Educational demo only. Not investment advice.',
+      disclaimer: 'Educational demo only. Not investment advice.',
     });
   }
+
   res.json({
     title: '3-2-1 crack SMA crossover',
     narrative: [
-      'Crack = refining margin proxy: (2×gasoline + 1×heating oil)×42 − 3×WTI, per bbl.',
-      'Long WTI when the fast SMA of the crack is above the slow SMA (widening margins).',
-      'Go flat when the crack trend turns down.',
+      'Crack = (2×gasoline + 1×heating oil)×42 − 3×WTI per bbl.',
+      'Long WTI when fast SMA of crack > slow SMA.',
     ],
-    disclaimer:
-      'Educational demo only. Not investment advice. Products from EIA or model-derived from WTI.',
+    disclaimer: 'Educational demo only. Not investment advice.',
   });
 });
 

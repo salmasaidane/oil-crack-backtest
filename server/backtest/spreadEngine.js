@@ -1,74 +1,73 @@
 /**
- * Long/flat WTI backtest on SMA crossover (signal 1 = long, 0 = flat).
+ * PnL for long distillate crack / short gasoline crack (1,000 bbl per leg).
+ * Daily mark: notional × Δ(spread), spread = distillate crack − gasoline crack.
  */
 
-function runBacktest(signals, params = {}) {
+function runSpreadBacktest(signals, params = {}) {
   const {
-    slowPeriod = 50,
+    slowPeriod = 30,
     initialCapital = 1_000_000,
     contractBbl = 1000,
     costBps = 2.5,
   } = params;
 
-  const fee = (price) => (costBps / 10000) * contractBbl * price;
   const startIdx = signals.findIndex((s) => s.smaSlow != null);
   if (startIdx < 0) {
     return emptyResult(initialCapital, params);
   }
 
+  const fee = (spreadLevel) =>
+    (costBps / 10000) * contractBbl * Math.max(20, Math.abs(spreadLevel));
+
   let cash = initialCapital;
   let position = 0;
-  let entryPrice = 0;
+  let entrySpread = 0;
   const trades = [];
   const equity = [];
 
   for (let i = startIdx; i < signals.length; i++) {
     const cur = signals[i];
-    const price = cur.wti;
+    const spread = cur.spread;
 
     if (i > startIdx && position === 1) {
       const prev = signals[i - 1];
-      cash += contractBbl * (price - prev.wti);
+      cash += contractBbl * (spread - prev.spread);
     }
 
     equity.push({
       date: cur.date,
       equity: cash,
       position,
-      wti: price,
+      spread,
+      gasCrack: cur.gasCrack,
+      distCrack: cur.distCrack,
       signal: cur.signal,
-      smaFast: cur.smaFast,
-      smaSlow: cur.smaSlow,
     });
 
-    const tag =
-      params.strategy === 'crack'
-        ? `Crack SMA ${params.fastPeriod}/${slowPeriod}`
-        : `WTI SMA ${params.fastPeriod}/${slowPeriod}`;
-    void slowPeriod;
+    const tag = `Dist−Gas ${params.fastPeriod}/${slowPeriod}`;
 
     if (position === 0 && cur.signal === 1) {
       position = 1;
-      entryPrice = price;
-      cash -= fee(price);
+      entrySpread = spread;
+      cash -= fee(spread);
       trades.push({
         date: cur.date,
-        side: 'BUY',
-        price,
-        reason: `${tag} bullish`,
+        side: 'LONG SPREAD',
+        price: spread,
+        reason: `${tag}: distillate crack outperforming gasoline`,
       });
     } else if (position === 1 && cur.signal === 0) {
-      const tradePnl = contractBbl * (price - entryPrice);
-      cash -= fee(price);
+      const tradePnl = contractBbl * (spread - entrySpread);
+      cash -= fee(spread);
       trades.push({
         date: cur.date,
-        side: 'SELL',
-        price,
+        side: 'EXIT SPREAD',
+        price: spread,
         pnl: tradePnl,
-        reason: `${tag} bearish`,
+        reason: `${tag}: spread trend reversed`,
       });
       position = 0;
-      entryPrice = 0;
+      entrySpread = 0;
     }
   }
 
@@ -97,12 +96,18 @@ function runBacktest(signals, params = {}) {
     maxDd = Math.min(maxDd, (e.equity - peak) / peak);
   }
 
-  const closed = trades.filter((t) => t.side === 'SELL');
+  const closed = trades.filter((t) => t.side === 'EXIT SPREAD');
   const wins = closed.filter((t) => t.pnl > 0).length;
+
+  const spreads = signals.map((s) => s.spread).filter((x) => x != null);
+  const maxSpread = spreads.length ? Math.max(...spreads) : 0;
+  const minSpread = spreads.length ? Math.min(...spreads) : 0;
 
   return {
     summary: {
-      strategy: params.strategyLabel || 'SMA crossover (long/flat)',
+      strategy:
+        params.strategyLabel ||
+        'Long distillate crack / short gasoline crack (spread momentum)',
       initialCapital,
       finalEquity: Number(finalEq.toFixed(2)),
       totalReturnPct: Number((totalReturn * 100).toFixed(2)),
@@ -112,6 +117,7 @@ function runBacktest(signals, params = {}) {
       winRatePct: closed.length
         ? Number(((wins / closed.length) * 100).toFixed(1))
         : 0,
+      spreadRangeBbl: `${minSpread.toFixed(1)} to ${maxSpread.toFixed(1)} $/bbl`,
     },
     equity,
     trades,
@@ -122,7 +128,7 @@ function runBacktest(signals, params = {}) {
 function emptyResult(initialCapital, params) {
   return {
     summary: {
-      strategy: 'WTI SMA crossover',
+      strategy: 'Distillate–gasoline spread',
       initialCapital,
       finalEquity: initialCapital,
       totalReturnPct: 0,
@@ -137,4 +143,4 @@ function emptyResult(initialCapital, params) {
   };
 }
 
-module.exports = { runBacktest };
+module.exports = { runSpreadBacktest };

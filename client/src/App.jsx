@@ -13,8 +13,16 @@ import {
 } from 'recharts';
 
 const STRATEGY_DEFAULTS = {
+  spread: { strategy: 'spread', fastPeriod: 10, slowPeriod: 30 },
   crack: { strategy: 'crack', fastPeriod: 15, slowPeriod: 40 },
   wti: { strategy: 'wti', fastPeriod: 20, slowPeriod: 50 },
+};
+
+const HEADERS = {
+  spread:
+    'Distillate vs gasoline crack spread (EIA Gulf Coast spot). Long the spread when distillate margins outperform gasoline—relevant when middle-distillate tightness diverges from summer gasoline strength.',
+  crack: '3-2-1 crack trend on WTI. Long crude when the composite refining margin trend is up.',
+  wti: 'WTI trend following. Long 1,000 bbl when fast price SMA is above slow.',
 };
 
 function formatPct(n) {
@@ -23,8 +31,8 @@ function formatPct(n) {
 }
 
 export default function App() {
-  const [strategy, setStrategy] = useState('crack');
-  const [params, setParams] = useState(STRATEGY_DEFAULTS.crack);
+  const [strategy, setStrategy] = useState('spread');
+  const [params, setParams] = useState(STRATEGY_DEFAULTS.spread);
   const [meta, setMeta] = useState(null);
   const [signals, setSignals] = useState([]);
   const [context, setContext] = useState(null);
@@ -91,6 +99,7 @@ export default function App() {
     setResult(null);
   };
 
+  const isSpread = strategy === 'spread';
   const isCrack = strategy === 'crack';
 
   const chartData = useMemo(
@@ -99,9 +108,11 @@ export default function App() {
         date: s.date.slice(5),
         wti: s.wti,
         crack321: s.crack321,
+        gasCrack: s.gasCrack,
+        distCrack: s.distCrack,
+        spread: s.spread,
         smaFast: s.smaFast,
         smaSlow: s.smaSlow,
-        signal: s.signal,
       })),
     [signals]
   );
@@ -137,24 +148,26 @@ export default function App() {
   return (
     <div className="app">
       <header>
-        <h1>Oil Backtester</h1>
-        <p>
-          {isCrack
-            ? '3-2-1 crack spread trend: long WTI when fast crack SMA is above slow. Flat when margins trend down.'
-            : 'WTI price trend: long when fast WTI SMA is above slow. Flat otherwise.'}{' '}
-          One lot = 1,000 bbl.
-        </p>
+        <h1>Oil products backtester</h1>
+        <p>{HEADERS[strategy]}</p>
         <div className="strategy-toggle">
+          <button
+            type="button"
+            className={isSpread ? 'active' : ''}
+            onClick={() => switchStrategy('spread')}
+          >
+            Distillate vs gas
+          </button>
           <button
             type="button"
             className={isCrack ? 'active' : ''}
             onClick={() => switchStrategy('crack')}
           >
-            Crack spread
+            3-2-1 crack
           </button>
           <button
             type="button"
-            className={!isCrack ? 'active' : ''}
+            className={strategy === 'wti' ? 'active' : ''}
             onClick={() => switchStrategy('wti')}
           >
             WTI trend
@@ -163,6 +176,11 @@ export default function App() {
         <div className="badge-row">
           <span className="badge accent">{meta?.strategy}</span>
           <span className="badge accent">Source: {meta?.dataSource}</span>
+          {meta?.productsNote && (
+            <span className="badge" title={meta.productsNote}>
+              EIA products
+            </span>
+          )}
           <span className="badge">{meta?.from} → {meta?.to}</span>
         </div>
       </header>
@@ -172,7 +190,7 @@ export default function App() {
           <h2>Strategy parameters</h2>
           {[
             { key: 'fastPeriod', label: 'Fast SMA (days)', min: 5, max: 40, step: 1 },
-            { key: 'slowPeriod', label: 'Slow SMA (days)', min: 20, max: 120, step: 5 },
+            { key: 'slowPeriod', label: 'Slow SMA (days)', min: 15, max: 120, step: 5 },
           ].map(({ key, label, min, max, step }) => (
             <div className="field" key={key}>
               <label>
@@ -197,7 +215,7 @@ export default function App() {
 
           {context && (
             <>
-              <h2 style={{ marginTop: '1.25rem' }}>How it works</h2>
+              <h2 style={{ marginTop: '1.25rem' }}>Thesis &amp; data</h2>
               <ul className="context-list">
                 {context.narrative.map((line, i) => (
                   <li key={i}>{line}</li>
@@ -238,31 +256,31 @@ export default function App() {
                 <div className="label">Final equity</div>
                 <div className="value">${summary.finalEquity.toLocaleString()}</div>
               </div>
+              {summary.spreadRangeBbl && (
+                <div className="metric">
+                  <div className="label">Spread range</div>
+                  <div className="value" style={{ fontSize: '0.85rem' }}>
+                    {summary.spreadRangeBbl}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
           <div className="panel">
             <h2>
-              {isCrack
-                ? '3-2-1 crack & SMAs ($/bbl)'
-                : 'WTI price & SMAs ($/bbl)'}
+              {isSpread
+                ? 'Cracks & distillate−gasoline spread ($/bbl)'
+                : isCrack
+                  ? '3-2-1 crack & SMAs ($/bbl)'
+                  : 'WTI & SMAs ($/bbl)'}
             </h2>
             <div className="chart-wrap">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={chartData}>
                   <CartesianGrid stroke="#243038" strokeDasharray="3 3" />
                   <XAxis dataKey="date" tick={{ fill: '#8a9aa8', fontSize: 10 }} />
-                  <YAxis
-                    yAxisId="main"
-                    tick={{ fill: '#8a9aa8', fontSize: 10 }}
-                  />
-                  {isCrack && (
-                    <YAxis
-                      yAxisId="wti"
-                      orientation="right"
-                      tick={{ fill: '#5a6a78', fontSize: 10 }}
-                    />
-                  )}
+                  <YAxis yAxisId="main" tick={{ fill: '#8a9aa8', fontSize: 10 }} />
                   <Tooltip
                     contentStyle={{
                       background: '#141a20',
@@ -271,29 +289,49 @@ export default function App() {
                     }}
                   />
                   <Legend />
-                  {isCrack ? (
+                  {isSpread && (
                     <>
                       <Line
                         yAxisId="main"
                         type="monotone"
-                        dataKey="crack321"
-                        name="Crack 3-2-1"
+                        dataKey="distCrack"
+                        name="Distillate crack"
                         stroke="#c9a227"
                         dot={false}
-                        strokeWidth={1.5}
+                        strokeWidth={1.3}
                       />
                       <Line
-                        yAxisId="wti"
+                        yAxisId="main"
                         type="monotone"
-                        dataKey="wti"
-                        name="WTI"
-                        stroke="#3d9a8b55"
+                        dataKey="gasCrack"
+                        name="Gasoline crack"
+                        stroke="#3d9a8b"
                         dot={false}
-                        strokeWidth={1}
-                        strokeDasharray="4 4"
+                        strokeWidth={1.3}
+                      />
+                      <Line
+                        yAxisId="main"
+                        type="monotone"
+                        dataKey="spread"
+                        name="Spread (dist−gas)"
+                        stroke="#e8edf2"
+                        dot={false}
+                        strokeWidth={1.8}
                       />
                     </>
-                  ) : (
+                  )}
+                  {isCrack && (
+                    <Line
+                      yAxisId="main"
+                      type="monotone"
+                      dataKey="crack321"
+                      name="Crack 3-2-1"
+                      stroke="#c9a227"
+                      dot={false}
+                      strokeWidth={1.5}
+                    />
+                  )}
+                  {strategy === 'wti' && (
                     <Line
                       yAxisId="main"
                       type="monotone"
@@ -308,19 +346,20 @@ export default function App() {
                     yAxisId="main"
                     type="monotone"
                     dataKey="smaFast"
-                    name="Fast SMA"
+                    name={isSpread ? 'Fast SMA (spread)' : 'Fast SMA'}
                     stroke="#4caf82"
                     dot={false}
-                    strokeWidth={1.2}
+                    strokeWidth={1.1}
+                    strokeDasharray={isSpread ? '4 4' : undefined}
                   />
                   <Line
                     yAxisId="main"
                     type="monotone"
                     dataKey="smaSlow"
-                    name="Slow SMA"
+                    name={isSpread ? 'Slow SMA (spread)' : 'Slow SMA'}
                     stroke="#8a9aa8"
                     dot={false}
-                    strokeWidth={1.2}
+                    strokeWidth={1.1}
                   />
                 </ComposedChart>
               </ResponsiveContainer>
@@ -364,7 +403,7 @@ export default function App() {
                   <tr>
                     <th>Date</th>
                     <th>Side</th>
-                    <th>Price</th>
+                    <th>Level</th>
                     <th>PnL</th>
                     <th>Reason</th>
                   </tr>
@@ -374,7 +413,9 @@ export default function App() {
                     <tr key={i}>
                       <td>{t.date}</td>
                       <td>{t.side}</td>
-                      <td>${t.price?.toFixed(2)}</td>
+                      <td>
+                        {isSpread ? `${t.price?.toFixed(2)} $/bbl` : `$${t.price?.toFixed(2)}`}
+                      </td>
                       <td>{t.pnl != null ? `$${t.pnl.toFixed(0)}` : '—'}</td>
                       <td>{t.reason}</td>
                     </tr>
